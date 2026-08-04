@@ -41,7 +41,19 @@ async function _initDB(): Promise<Database> {
   db.run('PRAGMA foreign_keys=ON')
 
   createTables(db)
+  migrate(db)
   return db
+}
+
+// Add columns introduced in newer versions to existing databases
+function migrate(d: Database) {
+  const cols = (d.exec('PRAGMA table_info(papers)')[0]?.values || []).map((r: any[]) => r[1] as string)
+  if (!cols.includes('parent_id')) {
+    try { d.run('ALTER TABLE papers ADD COLUMN parent_id TEXT DEFAULT NULL') } catch { /* already exists */ }
+  }
+  if (!cols.includes('has_answer_key')) {
+    try { d.run('ALTER TABLE papers ADD COLUMN has_answer_key INTEGER DEFAULT 0') } catch { /* already exists */ }
+  }
 }
 
 function createTables(d: Database) {
