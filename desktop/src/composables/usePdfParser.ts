@@ -1,7 +1,6 @@
 import { ref } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
 
-// Use the bundled worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
 
 export function usePdfParser() {
@@ -12,10 +11,15 @@ export function usePdfParser() {
     isParsing.value = true
     parseError.value = null
     try {
-      // For Tauri: read file as ArrayBuffer via Tauri FS API
+      if (!filePath) throw new Error('文件路径为空')
+      
       const { readFile } = await import('@tauri-apps/plugin-fs')
+      // Tauri v2 plugin-fs v2.5.x: readFile accepts string path
       const data = await readFile(filePath)
-      const pdf = await pdfjsLib.getDocument({ data: data.buffer }).promise
+      
+      // Convert Uint8Array to ArrayBuffer for pdf.js
+      const buffer = data instanceof Uint8Array ? data.buffer : data
+      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
       const textParts: string[] = []
       
       for (let i = 1; i <= pdf.numPages; i++) {
@@ -29,7 +33,7 @@ export function usePdfParser() {
       return textParts.join('\n')
     } catch (e: any) {
       parseError.value = e?.message ?? 'PDF解析失败'
-      throw e
+      throw new Error(`PDF解析失败: ${e?.message || e}`)
     } finally {
       isParsing.value = false
     }
