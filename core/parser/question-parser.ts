@@ -70,9 +70,15 @@ function scanLine(line: string): Mark[] {
   return marks.sort((a, b) => a.pos - b.pos)
 }
 
+// Some PDF pages embed every char as a separate text item joined by spaces
+// ("2 0 2 6 国 考" or "3 0 . 题干"). Collapse single spaces between CJK/alnum chars.
+export function normalizeText(text: string): string {
+  return text.replace(/([一-鿿A-Za-z0-9]) (?=[一-鿿A-Za-z0-9])/g, '$1')
+}
+
 // Split raw text into named sections by markers like 专项刷题一 / 第X套
 export function splitSections(rawText: string): { name: string; text: string }[] {
-  const lines = rawText.split(/\r?\n/)
+  const lines = normalizeText(rawText).split(/\r?\n/)
   const sections: { name: string; text: string }[] = []
   let current: { name: string; lines: string[] } | null = null
 
@@ -92,10 +98,11 @@ export function splitSections(rawText: string): { name: string; text: string }[]
 
 export function parseQuestions(paperId: string, rawText: string): ParsedQuestion[] {
   resetQuestionCounter()
-  const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0)
+  const lines = normalizeText(rawText).split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0)
   const questions: ParsedQuestion[] = []
 
   let current: { index: number; stemLines: string[]; optionLines: string[]; rawLines: string[] } | null = null
+  let pendingStem: string[] = []
 
   function flushQuestion() {
     if (!current || current.stemLines.length === 0) return
@@ -137,11 +144,17 @@ export function parseQuestions(paperId: string, rawText: string): ParsedQuestion
   }
 
   for (const line of lines) {
+    // Skip page-header lines (contain page numbers that look like question numbers)
+    if (/B站|CCtalk|抖音|夜色难免|前行必有曙光|大懒猫/.test(line)) continue
+
     const marks = scanLine(line)
 
-    // No marks: continue stem or skip page headers
+    // No marks: continue stem, or accumulate orphan stem once current question has all 4 options
+    // (question number lost by PDF layout — e.g. material-based questions spanning pages)
     if (marks.length === 0) {
-      if (current) addStem(line)
+      if (current && current.optionLines.length < 4) addStem(line)
+      else if (current && current.optionLines.length >= 4) pendingStem.push(line)
+      else pendingStem.push(line)
       continue
     }
 
@@ -153,11 +166,42 @@ export function parseQuestions(paperId: string, rawText: string): ParsedQuestion
       const before = line.slice(0, mark.pos).trim()
 
       if (mark.type === 'q') {
-        // Question number: anything before it is page header (ignore), content starts the stem
-        newQuestion(mark.num!, (before + ' ' + content).trim())
+        // Filter page numbers: isolated number jumping from the sequence (e.g. page "43" between 22 and 23)
+        // Use current.index when open (not yet flushed into questions)
+        const prevNum = current ? current.index : (questions.length > 0 ? questions[questions.length - 1].index : 0)
+        const nextNum = marks[i + 1] && marks[i + 1].type === 'q' ? marks[i + 1].num! : prevNum + 1
+        const isPageNumber = Math.abs(mark.num! - prevNum) > 2 && Math.abs(nextNum - prevNum) === 1
+        if (!isPageNumber) {
+          newQuestion(mark.num!, (before + ' ' + content).trim())
+          pendingStem = []
+        }
       } else if (mark.type === 'opt' || mark.type === 'tf') {
         // Option: content after the label is the option text
-        if (current) {
+        if (current && current.optionLines.length < 4) {
+          addOption(mark.label!, content)
+        } else if (current && current.optionLines.length >= 4 && pendingStem.length > 0) {
+          // New question starts while previous one is full (4 options) — lost question number.
+          // Flush previous, create the orphan question with the accumulated stem.
+          const prevNum: number = current.index
+          flushQuestion()
+          current = {
+            index: prevNum + 1,
+            stemLines: [...pendingStem],
+            optionLines: [],
+            rawLines: [...pendingStem],
+          }
+          pendingStem = []
+          addOption(mark.label!, content)
+        } else if (!current && pendingStem.length > 0) {
+          // Orphan stem + options = question with lost number; assign next sequential number
+          const prevNum = questions.length > 0 ? questions[questions.length - 1].index : 0
+          current = {
+            index: prevNum + 1,
+            stemLines: [...pendingStem],
+            optionLines: [],
+            rawLines: [...pendingStem],
+          }
+          pendingStem = []
           addOption(mark.label!, content)
         }
       }

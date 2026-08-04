@@ -103,6 +103,7 @@ async function loadPapers() {
       id: r.id, title: r.title, fileName: r.file_name, filePath: r.file_path,
       totalQuestions: r.total_questions, questionTypes: JSON.parse(r.question_types || '[]'),
       parsedAt: r.parsed_at, status: r.status, hasAnswerKey: !!r.has_answer_key,
+      parentId: r.parent_id ?? null,
     })) as Paper[]
   } catch (e) { console.error(e); papers.value = [] }
 }
@@ -110,24 +111,28 @@ async function loadPapers() {
 async function confirmImport() {
   // Save all previewed sections to DB
   if (!previewPaper.value) return
-  const { initDB, execute, saveDB } = await import('../db')
-  await initDB()
-  for (const item of previewRaw.value) {
-    if (item.qs.length === 0) continue
-    const paperId = previewPaper.value.id + '-s' + previewRaw.value.indexOf(item)
-    const paper: Paper = { ...previewPaper.value, id: paperId, title: previewPaper.value.title + '-' + item.sec.name, totalQuestions: item.qs.length }
-    execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0, previewPaper.value.id])
-    for (const q of item.qs) {
-      execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
-        [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
+  try {
+    const { initDB, execute, saveDB } = await import('../db')
+    await initDB()
+    for (const item of previewRaw.value) {
+      if (item.qs.length === 0) continue
+      const paperId = previewPaper.value.id + '-s' + previewRaw.value.indexOf(item)
+      const paper: Paper = { ...previewPaper.value, id: paperId, title: previewPaper.value.title + '-' + item.sec.name, totalQuestions: item.qs.length }
+      execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0, previewPaper.value.id])
+      for (const q of item.qs) {
+        execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
+          [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
+      }
+      papers.value.push(paper)
     }
-    papers.value.push(paper)
+    await saveDB()
+    previewPaper.value = null
+    previewSections.value = []
+    previewRaw.value = []
+  } catch (e: any) {
+    alert(`导入保存失败: ${e?.message || e}`)
   }
-  await saveDB()
-  previewPaper.value = null
-  previewSections.value = []
-  previewRaw.value = []
 }
 
 function cancelPreview() {
@@ -158,6 +163,10 @@ async function importPapers() {
         const rawText = await extractText(basePaper.filePath)
 
         // Split into named sections (e.g. 专项刷题一~二十); show preview first
+        if (rawText.trim().length < 100) {
+          alert(`「${fileName}」可能为扫描版 PDF（无法提取文字）。当前版本仅支持文字型 PDF，请使用文字版文件。`)
+          continue
+        }
         const sections = splitSections(rawText)
         const parsed = sections.map((sec, si) => ({
           sec,
