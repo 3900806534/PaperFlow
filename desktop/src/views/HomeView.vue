@@ -16,12 +16,37 @@
       <p class="empty-hint">点击"导入试卷"选择PDF文件</p>
     </div>
 
-    <div v-else class="paper-grid">
-      <PaperCard
-        v-for="p in papers" :key="p.id" :paper="p"
-        @click="$router.push('/paper/'+p.id)"
-        @delete="handleDelete(p.id)"
-      />
+    <div v-else>
+      <template v-for="(group, gi) in groupedPapers" :key="gi">
+        <div v-if="group.items.length > 1" class="group-header">
+          <span class="group-title">{{ group.items[0].fileName }}</span>
+          <span class="group-count">{{ group.items.length }} 套</span>
+        </div>
+        <div class="paper-grid">
+          <PaperCard
+            v-for="p in group.items" :key="p.id" :paper="p"
+            @click="$router.push('/paper/'+p.id)"
+            @delete="handleDelete(p.id)"
+          />
+        </div>
+      </template>
+    </div>
+
+    <div v-if="previewSections.length > 0" class="import-overlay">
+      <div class="import-modal">
+        <h3>解析完成，确认导入？</h3>
+        <p class="preview-hint">该 PDF 包含 {{ previewSections.length }} 套题，将分别导入：</p>
+        <div class="preview-list">
+          <div v-for="(s, i) in previewSections" :key="i" class="preview-row">
+            <span>{{ s.name }}</span>
+            <span class="preview-count">{{ s.count }} 题</span>
+          </div>
+        </div>
+        <div class="preview-actions">
+          <button class="btn-ghost" @click="cancelPreview">取消</button>
+          <button class="btn-primary" @click="confirmImport">确认导入</button>
+        </div>
+      </div>
     </div>
 
     <div v-if="isImporting" class="import-overlay">
@@ -35,7 +60,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePaperStore } from '../stores/paper'
 import PaperCard from '../components/PaperCard.vue'
@@ -47,11 +72,25 @@ import { initDB, execute, saveDB } from '../db'
 
 const router = useRouter()
 const store = usePaperStore()
+
+// Group papers by parent PDF (same source file)
+const groupedPapers = computed(() => {
+  const groups = new Map<string, Paper[]>()
+  for (const p of papers.value) {
+    const key = (p as any).parentId || p.id
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(p)
+  }
+  return Array.from(groups.values()).map(items => ({ parentId: items[0].id, items }))
+})
 const { extractText } = usePdfParser()
 const papers = ref<Paper[]>([])
 const isImporting = ref(false)
 const importProgress = ref(0)
 const importStatus = ref('')
+const previewSections = ref<{ name: string; count: number }[]>([])
+const previewPaper = ref<Paper | null>(null)
+const previewRaw = ref<{ sec: { name: string; text: string }, qs: any[] }[]>([])
 
 onMounted(async () => { await initDB(); await loadPapers() })
 
@@ -66,6 +105,35 @@ async function loadPapers() {
       parsedAt: r.parsed_at, status: r.status, hasAnswerKey: !!r.has_answer_key,
     })) as Paper[]
   } catch (e) { console.error(e); papers.value = [] }
+}
+
+async function confirmImport() {
+  // Save all previewed sections to DB
+  if (!previewPaper.value) return
+  const { initDB, execute, saveDB } = await import('../db')
+  await initDB()
+  for (const item of previewRaw.value) {
+    if (item.qs.length === 0) continue
+    const paperId = previewPaper.value.id + '-s' + previewRaw.value.indexOf(item)
+    const paper: Paper = { ...previewPaper.value, id: paperId, title: previewPaper.value.title + '-' + item.sec.name, totalQuestions: item.qs.length }
+    execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0, previewPaper.value.id])
+    for (const q of item.qs) {
+      execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
+        [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
+    }
+    papers.value.push(paper)
+  }
+  await saveDB()
+  previewPaper.value = null
+  previewSections.value = []
+  previewRaw.value = []
+}
+
+function cancelPreview() {
+  previewPaper.value = null
+  previewSections.value = []
+  previewRaw.value = []
 }
 
 async function importPapers() {
@@ -89,39 +157,32 @@ async function importPapers() {
         const basePaper: Paper = await invoke('import_paper', { filePath })
         const rawText = await extractText(basePaper.filePath)
 
-        // Split into named sections (e.g. 专项刷题一~二十); fallback to whole doc
+        // Split into named sections (e.g. 专项刷题一~二十); show preview first
         const sections = splitSections(rawText)
-        const usable = sections.filter(s => parseQuestions(basePaper.id + '-s' + sections.indexOf(s), s.text).length > 0)
+        const parsed = sections.map((sec, si) => ({
+          sec,
+          qs: parseQuestions(basePaper.id + '-s' + si, sec.text),
+        }))
+        const usable = parsed.filter(p => p.qs.length > 0)
 
         if (usable.length > 1) {
-          // Multiple sets: create one paper per section (skip empty/TOC/explanation pages)
-          for (let si = 0; si < sections.length; si++) {
-            const sec = sections[si]
-            const questions = parseQuestions(basePaper.id + '-s' + si, sec.text)
-            if (questions.length === 0) continue
-
-            const paper: Paper = { ...basePaper, id: basePaper.id + '-s' + si, title: basePaper.title + '-' + sec.name, totalQuestions: questions.length }
-            execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key) VALUES (?,?,?,?,?,?,?,?,?)`,
-              [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0])
-            for (const q of questions) {
-              execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
-                [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
-            }
-            papers.value.push(paper)
-          }
+          // Multiple sets: show preview dialog, save on confirm
+          previewPaper.value = basePaper
+          previewSections.value = usable.map(u => ({ name: u.sec.name, count: u.qs.length }))
+          previewRaw.value = usable
         } else {
-          // Single set
+          // Single set: save directly
           const questions = parseQuestions(basePaper.id, rawText)
           basePaper.totalQuestions = questions.length
-          execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key) VALUES (?,?,?,?,?,?,?,?,?)`,
-            [basePaper.id, basePaper.title, basePaper.fileName, basePaper.filePath, basePaper.totalQuestions, '["single"]', Date.now(), 'ready', 0])
+          execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [basePaper.id, basePaper.title, basePaper.fileName, basePaper.filePath, basePaper.totalQuestions, '["single"]', Date.now(), 'ready', 0, null])
           for (const q of questions) {
             execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
               [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
           }
           papers.value.push(basePaper)
+          await saveDB()
         }
-        await saveDB()
       } catch (e: any) {
         console.error(`导入失败: ${fileName}`, e)
         alert(`导入 ${fileName} 失败: ${e?.message || e}`)
@@ -165,4 +226,12 @@ async function handleDelete(id: string) {
 .import-modal { background: #fff; padding: 32px; border-radius: 12px; min-width: 360px; text-align: center; }
 .import-modal h3 { margin-bottom: 16px; }
 .import-status { margin-top: 12px; color: #666; font-size: 14px; }
+.preview-hint { color: #666; font-size: 13px; margin: 8px 0 12px; }
+.preview-list { max-height: 260px; overflow-y: auto; text-align: left; }
+.preview-row { display: flex; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 13px; }
+.preview-count { color: #4f46e5; font-weight: 600; }
+.preview-actions { display: flex; justify-content: center; gap: 12px; margin-top: 16px; }
+.group-header { display: flex; align-items: center; gap: 8px; margin: 24px 0 12px; }
+.group-title { font-size: 15px; font-weight: 600; color: #333; }
+.group-count { font-size: 12px; color: #888; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; }
 </style>

@@ -116,14 +116,19 @@ function handleBack() {
 
 async function handleFinish() {
   store.completeSession()
-  const grade = store.computeGrade()
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('save_session', {
-      session: store.currentSession,
-      userAnswers: Array.from(store.userAnswers.values()),
-      gradeSummary: grade,
-    })
+    const { initDB, execute, saveDB } = await import('../db')
+    await initDB()
+    const s = store.currentSession
+    if (s) {
+      execute('INSERT OR REPLACE INTO sessions (id,paper_id,started_at,last_active_at,completed_question_ids,current_question_index,status) VALUES (?,?,?,?,?,?,?)',
+        [s.id, s.paperId, s.startedAt, s.lastActiveAt, JSON.stringify(s.completedQuestionIds), s.currentQuestionIndex, s.status])
+    }
+    for (const [qid, ua] of store.userAnswers) {
+      execute('INSERT INTO user_answers (question_id,session_id,answer,answered_at,duration) VALUES (?,?,?,?,?)',
+        [qid, s?.id, JSON.stringify(ua.answer), ua.answeredAt, ua.duration])
+    }
+    await saveDB()
   } catch (e) {
     console.error('保存会话失败:', e)
   }

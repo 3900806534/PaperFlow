@@ -49,7 +49,8 @@ function createTables(d: Database) {
     id TEXT PRIMARY KEY, title TEXT, file_name TEXT, file_path TEXT,
     total_questions INTEGER DEFAULT 0, question_types TEXT DEFAULT '[]',
     parsed_at INTEGER, status TEXT DEFAULT 'ready',
-    has_answer_key INTEGER DEFAULT 0, answer_key_path TEXT
+    has_answer_key INTEGER DEFAULT 0, answer_key_path TEXT,
+    parent_id TEXT DEFAULT NULL
   )`)
   d.run(`CREATE TABLE IF NOT EXISTS questions (
     id TEXT PRIMARY KEY, paper_id TEXT, idx INTEGER,
@@ -112,4 +113,18 @@ export function queryOne(sql: string, params?: any[]): any | null {
 export function execute(sql: string, params?: any[]): void {
   const d = getDB()
   d.run(sql, params)
+}
+
+// Note history for wrong questions (each wrong attempt can have a note)
+export function ensureNoteTable() {
+  const d = getDB()
+  d.run(`CREATE TABLE IF NOT EXISTS wrong_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id TEXT NOT NULL,
+    paper_id TEXT,
+    note TEXT,
+    duration INTEGER DEFAULT 0,
+    attempt_count INTEGER DEFAULT 1,
+    created_at INTEGER
+  )`)
 }

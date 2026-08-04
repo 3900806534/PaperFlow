@@ -72,6 +72,33 @@ onMounted(async () => {
       id: r.id, paperId: r.paper_id, index: r.idx, type: r.question_type,
       stem: r.stem, options: JSON.parse(r.options || '[]'), rawText: r.raw_text,
     })) as ParsedQuestion[]
+
+    // F: restore session progress
+    const sess = queryOne("SELECT * FROM sessions WHERE paper_id=? AND status='in_progress' ORDER BY last_active_at DESC LIMIT 1", [paperId]) as any
+    if (sess) {
+      const session = {
+        id: sess.id, paperId: sess.paper_id, startedAt: sess.started_at,
+        lastActiveAt: sess.last_active_at,
+        completedQuestionIds: JSON.parse(sess.completed_question_ids || '[]'),
+        currentQuestionIndex: sess.current_question_index, status: sess.status,
+      }
+      store.currentSession = session
+      // Load user answers for this session
+      const uas = queryAll('SELECT * FROM user_answers WHERE session_id=?', [sess.id]) as any[]
+      for (const ua of uas) {
+        store.userAnswers.set(ua.question_id, {
+          questionId: ua.question_id, answer: JSON.parse(ua.answer || '[]'),
+          answeredAt: ua.answered_at, duration: ua.duration,
+        })
+      }
+    }
+
+    // D: show grade report if answers exist
+    if (store.currentAnswers.length > 0 && store.userAnswers.size > 0) {
+      showGrade.value = true
+      const g = store.computeGrade()
+      if (g) correctCount.value = g.correctCount
+    }
   } catch (e) {
     console.error('加载试卷失败:', e)
   }
