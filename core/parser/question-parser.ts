@@ -29,7 +29,7 @@ function isTF(text: string): boolean {
 // Scan a line for question-number and option marks (inline-aware)
 function scanLine(line: string): Mark[] {
   const marks: Mark[] = []
-  
+
   // Scan question numbers: digits followed by separator, next char not digit (avoid "6.5元")
   const qRe = /(?:第\s*)?(\d{1,3})\s*[\.、．）\)题](?=\s|[^0-9])/g
   let m: RegExpExecArray | null
@@ -42,7 +42,7 @@ function scanLine(line: string): Mark[] {
       marks.push({ pos: m.index, len: m[0].length, type: 'q', num: parseInt(m[1], 10) })
     }
   }
-  
+
   // Scan options A-F
   const optRe = /([A-F])\s*[\.、．）\)](?=\s|[^0-9])/g
   while ((m = optRe.exec(line))) {
@@ -54,7 +54,7 @@ function scanLine(line: string): Mark[] {
       marks.push({ pos: m.index, len: m[0].length, type: 'opt', label: m[1] })
     }
   }
-  
+
   // Scan True/False labels: 对. 错、 正确 等
   const tfRe = /(对|错|正确|错误|√|×|T|F)\s*[\.、．）\)]?(?=\s|[^对错正确错误√×TF])/g
   while ((m = tfRe.exec(line))) {
@@ -66,15 +66,35 @@ function scanLine(line: string): Mark[] {
       }
     }
   }
-  
+
   return marks.sort((a, b) => a.pos - b.pos)
+}
+
+// Split raw text into named sections by markers like 专项刷题一 / 第X套
+export function splitSections(rawText: string): { name: string; text: string }[] {
+  const lines = rawText.split(/\r?\n/)
+  const sections: { name: string; text: string }[] = []
+  let current: { name: string; lines: string[] } | null = null
+
+  for (const line of lines) {
+    const allMatches = line.match(/专项刷题[一二三四五六七八九十]{1,3}/g) || []
+    if (allMatches.length === 1 && !line.includes('B站') && !line.includes('CCtalk')) {
+      // Single section marker on this line = new section (skip TOC lines with multiple markers)
+      if (current) sections.push({ name: current.name, text: current.lines.join('\n') })
+      current = { name: allMatches[0], lines: [] }
+    } else if (current) {
+      current.lines.push(line)
+    }
+  }
+  if (current) sections.push({ name: current.name, text: current.lines.join('\n') })
+  return sections
 }
 
 export function parseQuestions(paperId: string, rawText: string): ParsedQuestion[] {
   resetQuestionCounter()
   const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0)
   const questions: ParsedQuestion[] = []
-  
+
   let current: { index: number; stemLines: string[]; optionLines: string[]; rawLines: string[] } | null = null
 
   function flushQuestion() {
@@ -94,13 +114,13 @@ export function parseQuestions(paperId: string, rawText: string): ParsedQuestion
     current = null
   }
 
-  function newQuestion(num: number, rest: string) {
+  function newQuestion(num: number, content: string) {
     flushQuestion()
     current = {
       index: num,
-      stemLines: [rest.trim()],
+      stemLines: [content.trim()],
       optionLines: [],
-      rawLines: [rest.trim()],
+      rawLines: [content.trim()],
     }
   }
 

@@ -42,7 +42,7 @@ import PaperCard from '../components/PaperCard.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import type { Paper } from '@core/types/paper'
 import { usePdfParser } from '../composables/usePdfParser'
-import { parseQuestions } from '@core/parser/question-parser'
+import { parseQuestions, splitSections } from '@core/parser/question-parser'
 import { initDB, execute, saveDB } from '../db'
 
 const router = useRouter()
@@ -86,19 +86,42 @@ async function importPapers() {
 
       try {
         const { invoke } = await import('@tauri-apps/api/core')
-        const paper: Paper = await invoke('import_paper', { filePath })
-        const rawText = await extractText(paper.filePath)
-        const questions = parseQuestions(paper.id, rawText)
-        paper.totalQuestions = questions.length
+        const basePaper: Paper = await invoke('import_paper', { filePath })
+        const rawText = await extractText(basePaper.filePath)
 
-        execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key) VALUES (?,?,?,?,?,?,?,?,?)`,
-          [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0])
-        for (const q of questions) {
-          execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
-            [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
+        // Split into named sections (e.g. 专项刷题一~二十); fallback to whole doc
+        const sections = splitSections(rawText)
+        const usable = sections.filter(s => parseQuestions(basePaper.id + '-s' + sections.indexOf(s), s.text).length > 0)
+
+        if (usable.length > 1) {
+          // Multiple sets: create one paper per section (skip empty/TOC/explanation pages)
+          for (let si = 0; si < sections.length; si++) {
+            const sec = sections[si]
+            const questions = parseQuestions(basePaper.id + '-s' + si, sec.text)
+            if (questions.length === 0) continue
+
+            const paper: Paper = { ...basePaper, id: basePaper.id + '-s' + si, title: basePaper.title + '-' + sec.name, totalQuestions: questions.length }
+            execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key) VALUES (?,?,?,?,?,?,?,?,?)`,
+              [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0])
+            for (const q of questions) {
+              execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
+                [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
+            }
+            papers.value.push(paper)
+          }
+        } else {
+          // Single set
+          const questions = parseQuestions(basePaper.id, rawText)
+          basePaper.totalQuestions = questions.length
+          execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key) VALUES (?,?,?,?,?,?,?,?,?)`,
+            [basePaper.id, basePaper.title, basePaper.fileName, basePaper.filePath, basePaper.totalQuestions, '["single"]', Date.now(), 'ready', 0])
+          for (const q of questions) {
+            execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
+              [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
+          }
+          papers.value.push(basePaper)
         }
         await saveDB()
-        papers.value.push(paper)
       } catch (e: any) {
         console.error(`导入失败: ${fileName}`, e)
         alert(`导入 ${fileName} 失败: ${e?.message || e}`)
