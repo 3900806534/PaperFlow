@@ -14,10 +14,8 @@ export function usePdfParser() {
       if (!filePath) throw new Error('文件路径为空')
       
       const { readFile } = await import('@tauri-apps/plugin-fs')
-      // Correct: readFile takes a string path (NOT an object)
       const data = await readFile(filePath)
       
-      // Convert Uint8Array to ArrayBuffer for pdf.js
       const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
       const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
       const textParts: string[] = []
@@ -25,7 +23,26 @@ export function usePdfParser() {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i)
         const content = await page.getTextContent()
-        const pageText = content.items.map((item: any) => item.str).join(' ')
+        
+        // Rebuild line structure using y-coordinates
+        // pdf.js gives flat items; y position changes indicate new lines
+        let pageText = ''
+        let lastY: number | null = null
+        let lastX: number | null = null
+        for (const item of content.items as any[]) {
+          const y = item.transform?.[5] ?? 0
+          const x = item.transform?.[4] ?? 0
+          if (lastY !== null) {
+            if (Math.abs(y - lastY) > 3) {
+              pageText += '\n'        // new line
+            } else if (lastX !== null && x > lastX + 2) {
+              pageText += ' '         // same line, space between items
+            }
+          }
+          pageText += item.str
+          lastY = y
+          lastX = x
+        }
         textParts.push(pageText)
       }
       return textParts.join('\n')
