@@ -90,7 +90,7 @@ const importProgress = ref(0)
 const importStatus = ref('')
 const previewSections = ref<{ name: string; count: number }[]>([])
 const previewPaper = ref<Paper | null>(null)
-const previewRaw = ref<{ sec: { name: string; text: string }, qs: any[] }[]>([])
+const previewRaw = ref<{ sec: { name: string; text: string }, si: number, qs: any[] }[]>([])
 
 onMounted(async () => { await initDB(); await loadPapers() })
 
@@ -116,7 +116,7 @@ async function confirmImport() {
     await initDB()
     for (const item of previewRaw.value) {
       if (item.qs.length === 0) continue
-      const paperId = previewPaper.value.id + '-s' + previewRaw.value.indexOf(item)
+      const paperId = previewPaper.value.id + '-s' + item.si
       const paper: Paper = { ...previewPaper.value, id: paperId, title: previewPaper.value.title + '-' + item.sec.name, totalQuestions: item.qs.length }
       execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key,parent_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
         [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0, previewPaper.value.id])
@@ -170,6 +170,7 @@ async function importPapers() {
         const sections = splitSections(rawText)
         const parsed = sections.map((sec, si) => ({
           sec,
+          si,
           qs: parseQuestions(basePaper.id + '-s' + si, sec.text),
         }))
         const usable = parsed.filter(p => p.qs.length > 0)
