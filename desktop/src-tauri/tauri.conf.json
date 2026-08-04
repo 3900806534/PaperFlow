@@ -18,7 +18,7 @@
         "height": 750,
         "center": true,
         "resizable": true,
-        "visible": false
+        "visible": true
       },
       {
         "label": "floatball",
@@ -28,10 +28,10 @@
         "resizable": false,
         "decorations": false,
         "alwaysOnTop": true,
-        "transparent": true,
         "visible": true,
         "url": "floatball.html",
         "skipTaskbar": true,
+        "transparent": true,
         "shadow": false
       }
     ],
@@ -40,9 +40,7 @@
     }
   },
   "bundle": {
-    "icon": [
-      "icons/icon.ico"
-    ]
+    "icon": ["icons/icon.ico"]
   },
   "plugins": {}
 }
