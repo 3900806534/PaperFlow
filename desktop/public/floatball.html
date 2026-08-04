@@ -1,23 +1,309 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"/><title>PaperFlow</title>
+<head>
+<meta charset="UTF-8"/>
+<title>PaperFlow</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:transparent;overflow:hidden;user-select:none}
-.ball{width:44px;height:44px;background:rgba(24,10,50,0.92);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 2px 10px rgba(20,8,40,0.6);transition:transform 0.15s}
-.ball:hover{transform:scale(1.15)}
-.star{font-size:20px;color:#c9a84c;line-height:1}
-.txt{font-size:7px;color:#c9a84c}
-</style></head>
+html,body{width:100%;height:100%;background:transparent;overflow:hidden;user-select:none;-webkit-user-select:none}
+body{font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif}
+
+#ball{
+  position:absolute;left:2px;top:2px;width:44px;height:44px;border-radius:50%;
+  background:radial-gradient(circle at 32% 26%,rgba(255,255,255,0.18),transparent 42%),linear-gradient(145deg,#32206b,#160a30);
+  border:1px solid rgba(201,168,76,0.5);
+  box-shadow:0 4px 14px rgba(8,3,20,0.55);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  cursor:grab;transition:box-shadow .15s ease;
+}
+#ball:hover{box-shadow:0 4px 22px rgba(201,168,76,0.4)}
+#ball.dragging{cursor:grabbing}
+#star{font-size:20px;color:#c9a84c;line-height:1}
+#txt{font-size:7px;color:#c9a84c;line-height:1;margin-top:2px;white-space:nowrap}
+#badge{
+  position:absolute;top:-5px;right:-5px;min-width:20px;height:20px;padding:0 5px;
+  border-radius:10px;background:#e5484d;color:#fff;font-size:11px;font-weight:700;
+  line-height:20px;text-align:center;box-shadow:0 0 0 2px #160a30;display:none;
+}
+#badge.on{display:block}
+</style>
+</head>
 <body>
-<div class="ball" id="b"><span class="star">&#9737;</span><span class="txt">PaperFlow</span></div>
+<div id="ball">
+  <span id="star">&#9737;</span>
+  <span id="txt">PaperFlow</span>
+  <span id="badge">0</span>
+</div>
 <script type="module">
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit } from "@tauri-apps/api/event";
-let d=!1,sx,sy;
-document.getElementById("b").onmousedown=async e=>{
-sx=e.clientX;sy=e.clientY;d=!1;
-let m=async ev=>{if(Math.abs(ev.clientX-sx)>3||Math.abs(ev.clientY-sy)>3){d=!0;let w=getCurrentWindow(),p=await w.outerPosition();await w.setPosition({x:p.x+ev.movementX,y:p.y+ev.movementY})}};
-let u=async()=>{document.removeEventListener("mousemove",m);document.removeEventListener("mouseup",u);if(!d)await emit("floatball-click");};
-document.addEventListener("mousemove",m);document.addEventListener("mouseup",u)};
-</script></body></html>
+import { getCurrentWindow, getByLabel, getCurrentMonitor } from "@tauri-apps/api/window";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Menu, MenuItem, Submenu } from "@tauri-apps/api/menu";
+
+const win = getCurrentWindow();
+
+const SIZE = 48;        /* full window size (logical px) */
+const PEEK = 10;        /* visible strip when auto-hidden */
+const SNAP_DIST = 40;   /* snap when released within this distance of an edge */
+const CLICK_THRESHOLD = 4;
+const HIDE_DELAY = 600; /* ms before auto-hiding after a snap */
+
+const ball = document.getElementById("ball");
+const txtEl = document.getElementById("txt");
+const badgeEl = document.getElementById("badge");
+
+let snap = null;      /* 'left' | 'right' | 'top' | 'bottom' | null */
+let hidden = false;   /* window currently shrunk to a peek strip */
+let expanded = false; /* user hovering, ball fully shown */
+let dragging = false;
+let unanswered = 0;
+
+let animId = null;
+let hideTimer = null;
+let wasHiddenAtDown = false;
+
+/* ---------------- monitor helpers (logical px) ---------------- */
+async function currentMonitor() {
+  const m = await getCurrentMonitor();
+  if (!m) return null;
+  const sf = m.scaleFactor || 1;
+  return { x: m.position.x / sf, y: m.position.y / sf, w: m.size.width / sf, h: m.size.height / sf };
+}
+
+/* ---------------- window geometry ---------------- */
+function snapRect(edge, m, x, y) {
+  switch (edge) {
+    case "left":   return { x: m.x, y, w: SIZE, h: SIZE };
+    case "right":  return { x: m.x + m.w - SIZE, y, w: SIZE, h: SIZE };
+    case "top":    return { x, y: m.y, w: SIZE, h: SIZE };
+    case "bottom": return { x, y: m.y + m.h - SIZE, w: SIZE, h: SIZE };
+  }
+}
+function peekRect(edge, m, x, y) {
+  switch (edge) {
+    case "left":   return { x: m.x, y, w: PEEK, h: SIZE };
+    case "right":  return { x: m.x + m.w - PEEK, y, w: PEEK, h: SIZE };
+    case "top":    return { x, y: m.y, w: SIZE, h: PEEK };
+    case "bottom": return { x, y: m.y + m.h - PEEK, w: SIZE, h: PEEK };
+  }
+}
+
+/* Smoothly slide/resize the window to a target rect (logical px). */
+async function slideTo(rect, ms = 170) {
+  if (animId) cancelAnimationFrame(animId);
+  const p = await win.outerPosition();
+  const s = await win.outerSize();
+  const sx = p.x, sy = p.y, sw = s.width, sh = s.height;
+  const t0 = performance.now();
+  const ease = t => 1 - Math.pow(1 - t, 3);
+  await new Promise(resolve => {
+    const step = now => {
+      const k = Math.min(1, (now - t0) / ms);
+      const e = ease(k);
+      win.setPosition({ x: sx + (rect.x - sx) * e, y: sy + (rect.y - sy) * e });
+      win.setSize({ width: Math.round(sw + (rect.w - sw) * e), height: Math.round(sh + (rect.h - sh) * e) });
+      if (k < 1) animId = requestAnimationFrame(step);
+      else { animId = null; resolve(); }
+    };
+    animId = requestAnimationFrame(step);
+  });
+}
+
+async function applyRect(rect) {
+  if (animId) cancelAnimationFrame(animId);
+  await win.setPosition({ x: rect.x, y: rect.y });
+  await win.setSize({ width: rect.w, height: rect.h });
+}
+
+/* ---------------- snap / auto-hide / expand ---------------- */
+async function snapTo(edge, x, y) {
+  const m = await currentMonitor();
+  if (!m) return;
+  const r = snapRect(edge, m, x, y);
+  await applyRect(r);
+  snap = edge;
+  expanded = false;
+  scheduleHide();
+}
+
+function scheduleHide(delay = HIDE_DELAY) {
+  clearTimeout(hideTimer);
+  if (dragging || expanded || !snap) return;
+  hideTimer = setTimeout(() => {
+    (async () => {
+      if (dragging || expanded || !snap) return;
+      const m = await currentMonitor();
+      if (!m) return;
+      const p = await win.outerPosition();
+      hidden = true;
+      await slideTo(peekRect(snap, m, p.x, p.y));
+    })();
+  }, delay);
+}
+
+async function expandAnimated() {
+  clearTimeout(hideTimer);
+  if (!snap) { expanded = true; return; }
+  const m = await currentMonitor();
+  if (!m) return;
+  const p = await win.outerPosition();
+  const r = snapRect(snap, m, p.x, p.y);
+  hidden = false;
+  expanded = true;
+  await slideTo(r);
+}
+
+async function expandNow() {
+  clearTimeout(hideTimer);
+  if (!snap) { expanded = true; return; }
+  const m = await currentMonitor();
+  if (!m) return;
+  const p = await win.outerPosition();
+  const r = snapRect(snap, m, p.x, p.y);
+  hidden = false;
+  expanded = true;
+  await applyRect(r);
+}
+
+/* ---------------- drag & click ---------------- */
+ball.addEventListener("pointerdown", async e => {
+  if (e.button === 2) return; /* right click handled separately */
+  e.preventDefault();
+  if (hidden) { wasHiddenAtDown = true; await expandNow(); }
+  else wasHiddenAtDown = false;
+
+  dragging = true;
+  expanded = false;
+  ball.classList.add("dragging");
+
+  const p = await win.outerPosition();
+  let px = p.x, py = p.y;
+  let cx = e.clientX, cy = e.clientY;
+  let moved = false;
+
+  const onMove = ev => {
+    const dx = ev.clientX - cx, dy = ev.clientY - cy;
+    if (!moved && (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD)) moved = true;
+    if (moved) {
+      px += dx; py += dy;
+      cx = ev.clientX; cy = ev.clientY;
+      win.setPosition({ x: Math.round(px), y: Math.round(py) });
+    }
+  };
+  const onUp = () => {
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", onUp);
+    dragging = false;
+    ball.classList.remove("dragging");
+    if (moved) onDrop(px, py);
+    else if (!wasHiddenAtDown) emit("floatball-click"); /* click toggles main window */
+  };
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", onUp);
+});
+
+async function onDrop(x, y) {
+  const m = await currentMonitor();
+  if (!m) return;
+  const left = x - m.x, right = m.x + m.w - (x + SIZE);
+  const top = y - m.y, bottom = m.y + m.h - (y + SIZE);
+  let edge = null, dist = SNAP_DIST + 1;
+  if (left < dist)   { edge = "left";   dist = left; }
+  if (right < dist)  { edge = "right";  dist = right; }
+  if (top < dist)    { edge = "top";    dist = top; }
+  if (bottom < dist) { edge = "bottom"; dist = bottom; }
+  if (edge) snapTo(edge, x, y);
+  else { snap = null; hidden = false; expanded = false; }
+}
+
+/* ---------------- hover expand / auto hide ---------------- */
+document.addEventListener("mouseenter", () => {
+  if (snap && hidden && !dragging) expandAnimated();
+});
+document.addEventListener("mouseleave", () => {
+  if (!snap) return;
+  expanded = false;
+  scheduleHide(400);
+});
+
+/* ---------------- right-click context menu (native) ---------------- */
+async function showMain() {
+  try {
+    const main = getByLabel("main");
+    await main.show();
+    await main.setFocus();
+  } catch (err) { console.error(err); }
+}
+
+async function importPaper() {
+  try {
+    const file = await open({ multiple: false, filters: [{ name: "PDF", extensions: ["pdf"] }] });
+    if (file) {
+      try {
+        await invoke("import_paper", { filePath: file });
+        await emit("papers-changed");
+      } catch (err) {
+        alert("导入失败：" + err);
+      }
+    }
+  } catch (err) { console.error(err); }
+  await showMain();
+}
+
+async function buildMenu() {
+  let papers = [];
+  try { papers = await invoke("list_papers"); } catch (err) { console.error(err); }
+  const recentItems = [];
+  if (papers && papers.length) {
+    for (const p of papers.slice(0, 10)) {
+      recentItems.push(await MenuItem.new({
+        text: p.title || "未命名试卷",
+        action: () => { showMain(); emit("open-paper", { id: p.id, title: p.title }); },
+      }));
+    }
+  } else {
+    recentItems.push(await MenuItem.new({ text: "暂无试卷", enabled: false }));
+  }
+  const recent = await Submenu.new({ text: "最近试卷", items: recentItems });
+  const openMain = await MenuItem.new({ text: "打开主窗口", action: () => showMain() });
+  const importItem = await MenuItem.new({ text: "导入试卷", action: () => importPaper() });
+  const quit = await MenuItem.new({
+    text: "退出",
+    action: async () => {
+      try { await getByLabel("main").close(); } catch (err) {}
+      await win.close();
+    },
+  });
+  return await Menu.new({ items: [openMain, importItem, recent, quit] });
+}
+
+ball.addEventListener("contextmenu", async e => {
+  e.preventDefault();
+  if (hidden) await expandNow();
+  try {
+    const menu = await buildMenu();
+    await menu.popup(new LogicalPosition(e.clientX, e.clientY));
+  } catch (err) { console.error(err); }
+});
+
+/* ---------------- session badge ("N题未做") ---------------- */
+function renderBadge() {
+  badgeEl.textContent = String(unanswered);
+  badgeEl.classList.toggle("on", unanswered > 0);
+  txtEl.textContent = unanswered > 0 ? unanswered + "题未做" : "PaperFlow";
+}
+listen("session-updated", e => {
+  const p = e.payload;
+  const n = typeof p === "number" ? p : (p && typeof p === "object" ? (p.unanswered ?? p.remaining) : 0);
+  unanswered = Math.max(0, Math.trunc(Number(n) || 0));
+  renderBadge();
+});
+emit("floatball-ready"); /* ask main window to push current session state */
+
+renderBadge();
+win.setAlwaysOnTop(true).catch(() => {});
+</script>
+</body>
+</html>
