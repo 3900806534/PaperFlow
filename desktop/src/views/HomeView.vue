@@ -5,24 +5,22 @@
       <p class="subtitle">试卷学习工具</p>
       <div class="header-actions">
         <button class="btn-primary" @click="importPapers">导入试卷</button>
-        <router-link to="/wrongbook" class="btn-secondary">错题本</router-link>
-        <router-link to="/settings" class="btn-ghost">设置</router-link>
+        <button class="btn-secondary" @click="$router.push('/wrongbook')">错题本</button>
+        <button class="btn-ghost" @click="$router.push('/settings')">设置</button>
       </div>
     </header>
 
     <div v-if="papers.length === 0 && !isImporting" class="empty-state">
       <div class="empty-icon">&#9737;</div>
       <p>还没有试卷</p>
-      <p class="empty-hint">点击"导入试卷"开始学习</p>
+      <p class="empty-hint">点击"导入试卷"选择PDF文件</p>
     </div>
 
     <div v-else class="paper-grid">
       <PaperCard
-        v-for="paper in papers"
-        :key="paper.id"
-        :paper="paper"
-        @click="openPaper(paper.id)"
-        @delete="handleDelete(paper.id)"
+        v-for="p in papers" :key="p.id" :paper="p"
+        @click="$router.push('/paper/'+p.id)"
+        @delete="handleDelete(p.id)"
       />
     </div>
 
@@ -50,84 +48,57 @@ import { initDB, execute, saveDB } from '../db'
 const router = useRouter()
 const store = usePaperStore()
 const { extractText } = usePdfParser()
-
 const papers = ref<Paper[]>([])
 const isImporting = ref(false)
 const importProgress = ref(0)
 const importStatus = ref('')
 
-onMounted(async () => {
-  await loadPapers()
-})
+onMounted(async () => { await initDB(); await loadPapers() })
 
 async function loadPapers() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    const list: Paper[] = await invoke('list_papers')
-    papers.value = list
-    store.setPapers(list)
-  } catch {
-    papers.value = []
-  }
+    const list = await invoke<Paper[]>('list_papers')
+    papers.value = list || []
+  } catch { papers.value = [] }
 }
 
 async function importPapers() {
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
-    const selected = await open({
-      multiple: true,
-      filters: [{ name: 'PDF文件', extensions: ['pdf'] }],
-    })
-    if (!selected) return
-
-    const files = Array.isArray(selected) ? selected : [selected]
-    if (files.length === 0) return
+    const files = await open({ multiple: true, filters: [{ name: 'PDF', extensions: ['pdf'] }] })
+    if (!files) return
+    const list = Array.isArray(files) ? files : [files]
+    if (list.length === 0) return
 
     isImporting.value = true
     importProgress.value = 0
 
-    await initDB()
-    const { invoke } = await import('@tauri-apps/api/core')
-
-    for (let i = 0; i < files.length; i++) {
-      const filePath = files[i]
+    for (let i = 0; i < list.length; i++) {
+      const filePath = list[i]
       const fileName = filePath.split(/[\/]/).pop() || 'unknown.pdf'
       importStatus.value = `正在解析: ${fileName}`
 
       try {
-        // Copy file via Rust backend
+        const { invoke } = await import('@tauri-apps/api/core')
         const paper: Paper = await invoke('import_paper', { filePath })
-        
-        // Extract text with pdf.js
         const rawText = await extractText(paper.filePath)
-        
-        // Parse into structured questions
         const questions = parseQuestions(paper.id, rawText)
         paper.totalQuestions = questions.length
-        
-        // Save paper to DB
-        execute(
-          `INSERT OR REPLACE INTO papers (id, title, file_name, file_path, total_questions, question_types, parsed_at, status, has_answer_key) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0]
-        )
-        
-        // Save questions
+
+        execute(`INSERT OR REPLACE INTO papers (id,title,file_name,file_path,total_questions,question_types,parsed_at,status,has_answer_key) VALUES (?,?,?,?,?,?,?,?,?)`,
+          [paper.id, paper.title, paper.fileName, paper.filePath, paper.totalQuestions, '["single"]', Date.now(), 'ready', 0])
         for (const q of questions) {
-          execute(
-            `INSERT OR REPLACE INTO questions (id, paper_id, idx, question_type, stem, options, raw_text)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText]
-          )
+          execute(`INSERT OR REPLACE INTO questions (id,paper_id,idx,question_type,stem,options,raw_text) VALUES (?,?,?,?,?,?,?)`,
+            [q.id, q.paperId, q.index, q.type, q.stem, JSON.stringify(q.options), q.rawText])
         }
         await saveDB()
-
         papers.value.push(paper)
-        store.addPaper(paper)
       } catch (e: any) {
         console.error(`导入失败: ${fileName}`, e)
+        alert(`导入 ${fileName} 失败: ${e?.message || e}`)
       }
-      importProgress.value = Math.round(((i + 1) / files.length) * 100)
+      importProgress.value = Math.round(((i + 1) / list.length) * 100)
     }
   } catch (e) {
     console.error('导入错误:', e)
@@ -137,19 +108,13 @@ async function importPapers() {
   }
 }
 
-function openPaper(id: string) {
-  router.push(`/paper/${id}`)
-}
-
 async function handleDelete(id: string) {
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    await invoke('delete_paper', { paperId: id })
+    execute('DELETE FROM papers WHERE id=?', [id])
+    await saveDB()
     papers.value = papers.value.filter(p => p.id !== id)
     store.removePaper(id)
-  } catch (e) {
-    console.error('删除失败:', e)
-  }
+  } catch (e) { console.error(e) }
 }
 </script>
 

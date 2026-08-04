@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
 use std::fs;
 use std::path::PathBuf;
 
@@ -93,7 +92,7 @@ fn get_db_path() -> String {
 }
 
 #[tauri::command]
-pub async fn import_paper(app: AppHandle, file_path: String) -> Result<Paper, String> {
+pub async fn import_paper(file_path: String) -> Result<Paper, String> {
     let file_name = std::path::Path::new(&file_path)
         .file_name()
         .unwrap_or_default()
