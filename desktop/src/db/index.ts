@@ -1,5 +1,6 @@
 // PaperFlow — Local SQLite database via sql.js (WASM, zero native deps)
 import initSqlJs from 'sql.js'; import type { Database, SqlJsStatic } from 'sql.js'
+import wasmUrl from '../assets/sql-wasm.wasm?url'
 
 let SQL: SqlJsStatic | null = null
 let db: Database | null = null
@@ -8,15 +9,25 @@ const DB_PATH = 'D:/PaperFlowData/paperflow.db'
 async function getSQL(): Promise<SqlJsStatic> {
   if (!SQL) {
     SQL = await initSqlJs({
-      locateFile: (file: string) => `https://sql.js.org/dist/${file}`,
+      // Load wasm locally (offline support), bundled by Vite
+      locateFile: () => wasmUrl,
     })
   }
   return SQL
 }
 
-export async function initDB(): Promise<Database> {
+let initPromise: Promise<Database> | null = null
+
+export function initDB(): Promise<Database> {
+  if (!initPromise) {
+    initPromise = _initDB()
+  }
+  return initPromise
+}
+
+async function _initDB(): Promise<Database> {
   const sql = await getSQL()
-  
+
   // Try loading existing DB
   try {
     const { readFile } = await import('@tauri-apps/plugin-fs')
@@ -28,7 +39,7 @@ export async function initDB(): Promise<Database> {
 
   db.run('PRAGMA journal_mode=WAL')
   db.run('PRAGMA foreign_keys=ON')
-  
+
   createTables(db)
   return db
 }
