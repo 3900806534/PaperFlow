@@ -14,20 +14,17 @@ export function usePdfParser() {
       if (!filePath) throw new Error('文件路径为空')
       
       const { readFile } = await import('@tauri-apps/plugin-fs')
-      // Tauri v2 plugin-fs v2.5.x: readFile accepts string path
-      const data = await readFile(filePath)
+      // Tauri v2.5.x readFile expects { path: string } object
+      const data = await readFile({ path: filePath } as any)
       
-      // Convert Uint8Array to ArrayBuffer for pdf.js
-      const buffer = data instanceof Uint8Array ? data.buffer : data
+      const buffer = data instanceof Uint8Array ? data.buffer : (data as any).buffer
       const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
       const textParts: string[] = []
       
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i)
         const content = await page.getTextContent()
-        const pageText = content.items
-          .map((item: any) => item.str)
-          .join(' ')
+        const pageText = content.items.map((item: any) => item.str).join(' ')
         textParts.push(pageText)
       }
       return textParts.join('\n')
