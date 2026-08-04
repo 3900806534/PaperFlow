@@ -1,0 +1,7 @@
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+*.exe
+*.dll
+*.msi
+D:/PaperFlowData/

@@ -1,0 +1,16 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for PaperFlow",
+  "windows": ["main", "floatball"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "fs:allow-exists",
+    "fs:allow-mkdir"
+  ]
+}

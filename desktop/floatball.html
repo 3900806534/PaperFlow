@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"/><title>PaperFlow</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden;user-select:none}
+.ball{width:56px;height:56px;background:#1a0a3e;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;margin:4px;box-shadow:0 2px 12px rgba(30,27,75,0.5)}
+.ball:hover{transform:scale(1.1)}
+.ball-icon{font-size:22px;color:#c9a84c}
+.ball-text{font-size:8px;color:#c9a84c}
+</style></head>
+<body>
+<div class="ball" id="b"><span class="ball-icon">&#9737;</span><span class="ball-text">À¢Ã‚</span></div>
+<script type="module">
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emit } from "@tauri-apps/api/event";
+let d=!1,sx,sy;
+document.getElementById("b").addEventListener("mousedown",async e=>{
+sx=e.clientX;sy=e.clientY;d=!1;
+let m=async ev=>{if(Math.abs(ev.clientX-sx)>3||Math.abs(ev.clientY-sy)>3){d=!0;let w=getCurrentWindow(),p=await w.outerPosition();await w.setPosition({x:p.x+ev.movementX,y:p.y+ev.movementY})}};
+let u=async()=>{document.removeEventListener("mousemove",m);document.removeEventListener("mouseup",u);if(!d)await emit("floatball-click")};
+document.addEventListener("mousemove",m);document.addEventListener("mouseup",u)});
+</script>
+</body></html>
