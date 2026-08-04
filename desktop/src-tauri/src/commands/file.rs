@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Paper {
     pub id: String,
     pub title: String,
@@ -17,6 +18,7 @@ pub struct Paper {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ParsedQuestion {
     pub id: String,
     pub paper_id: String,
