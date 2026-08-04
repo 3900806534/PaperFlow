@@ -74,9 +74,13 @@ const manualAnswer = ref('')
 onMounted(async () => {
   if (store.currentQuestions.length === 0) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core')
-    const qs = await invoke('get_questions', { paperId }) as any
-      store.currentQuestions = qs
+      const { initDB, queryAll } = await import('../db')
+      await initDB()
+      const rows = queryAll('SELECT * FROM questions WHERE paper_id=? ORDER BY idx', [paperId]) as any[]
+      store.currentQuestions = rows.map(r => ({
+        id: r.id, paperId: r.paper_id, index: r.idx, type: r.question_type,
+        stem: r.stem, options: JSON.parse(r.options || '[]'), rawText: r.raw_text,
+      }))
     } catch (e) {
       console.error('加载题目失败:', e)
     }

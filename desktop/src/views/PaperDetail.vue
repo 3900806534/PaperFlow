@@ -56,11 +56,22 @@ const correctCount = ref(0)
 
 onMounted(async () => {
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const paperData = await invoke('get_paper', { paperId }) as Paper
-    const qs = await invoke('get_questions', { paperId }) as ParsedQuestion[]
-    store.selectPaper(paperData)
-    questions.value = qs
+    const { initDB, queryAll, queryOne } = await import('../db')
+    await initDB()
+    const row = queryOne('SELECT * FROM papers WHERE id=?', [paperId]) as any
+    if (row) {
+      const paperData: Paper = {
+        id: row.id, title: row.title, fileName: row.file_name, filePath: row.file_path,
+        totalQuestions: row.total_questions, questionTypes: JSON.parse(row.question_types || '[]'),
+        parsedAt: row.parsed_at, status: row.status, hasAnswerKey: !!row.has_answer_key,
+      }
+      store.selectPaper(paperData)
+    }
+    const rows = queryAll('SELECT * FROM questions WHERE paper_id=? ORDER BY idx', [paperId]) as any[]
+    questions.value = rows.map(r => ({
+      id: r.id, paperId: r.paper_id, index: r.idx, type: r.question_type,
+      stem: r.stem, options: JSON.parse(r.options || '[]'), rawText: r.raw_text,
+    })) as ParsedQuestion[]
   } catch (e) {
     console.error('加载试卷失败:', e)
   }

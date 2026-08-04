@@ -57,10 +57,15 @@ onMounted(async () => { await initDB(); await loadPapers() })
 
 async function loadPapers() {
   try {
-    const { invoke } = await import('@tauri-apps/api/core')
-    const list = await invoke<Paper[]>('list_papers')
-    papers.value = list || []
-  } catch { papers.value = [] }
+    await initDB()
+    const { queryAll } = await import('../db')
+    const rows = queryAll('SELECT * FROM papers ORDER BY parsed_at DESC') as any[]
+    papers.value = rows.map(r => ({
+      id: r.id, title: r.title, fileName: r.file_name, filePath: r.file_path,
+      totalQuestions: r.total_questions, questionTypes: JSON.parse(r.question_types || '[]'),
+      parsedAt: r.parsed_at, status: r.status, hasAnswerKey: !!r.has_answer_key,
+    })) as Paper[]
+  } catch (e) { console.error(e); papers.value = [] }
 }
 
 async function importPapers() {
