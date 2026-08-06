@@ -10,12 +10,17 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@gutenye/ocr-common": "^1.4.8",
+    "@gutenye/ocr-models": "^1.4.2",
+    "@paddle-js-models/ocr": "^4.1.1",
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-fs": "^2.2.0",
+    "onnxruntime-web": "^1.27.0",
     "pdfjs-dist": "^4.8.69",
     "pinia": "^2.3.0",
     "sql.js": "^1.14.1",
+    "tesseract.js": "^7.0.0",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },

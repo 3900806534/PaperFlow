@@ -28,7 +28,15 @@
   "bundle": {
     "icon": [
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/installer.nsh"
+      }
+    },
+    "resources": {
+      "WebView2Loader.dll": "./"
+    }
   },
   "plugins": {}
 }

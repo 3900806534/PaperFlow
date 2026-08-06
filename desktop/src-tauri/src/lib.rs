@@ -1,5 +1,7 @@
 mod commands;
 use commands::file::{import_paper, list_papers, get_paper, get_questions, delete_paper, reset_paper, read_answer_file, save_answers, save_session};
+use commands::ocr::ocr_image;
+use commands::umi_ocr::umi_ocr_image;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -9,6 +11,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             import_paper, list_papers, get_paper, get_questions,
             delete_paper, reset_paper, read_answer_file, save_answers, save_session,
+            ocr_image, umi_ocr_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

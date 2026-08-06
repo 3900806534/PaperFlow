@@ -56,3 +56,16 @@ export function usePdfParser() {
 
   return { isParsing, parseError, extractText }
 }
+
+// Render a PDF page to a canvas image (for OCR of scanned PDFs)
+export async function renderPageToImage(pdf: any, pageNum: number, scale = 4): Promise<HTMLCanvasElement> {
+  const page = await pdf.getPage(pageNum)
+  const viewport = page.getViewport({ scale })
+  const canvas = document.createElement('canvas')
+  canvas.width = viewport.width
+  canvas.height = viewport.height
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Canvas 2D 不可用')
+  await page.render({ canvasContext: ctx, viewport }).promise
+  return canvas
+}

@@ -66,8 +66,9 @@ import { usePaperStore } from '../stores/paper'
 import PaperCard from '../components/PaperCard.vue'
 import ProgressBar from '../components/ProgressBar.vue'
 import type { Paper } from '@core/types/paper'
-import { usePdfParser } from '../composables/usePdfParser'
-import { parseQuestions, splitSections } from '@core/parser/question-parser'
+import { usePdfParser, renderPageToImage } from '../composables/usePdfParser'
+import { recognizeImage, isScannedPdf } from '../ocr'
+import { parseQuestions, splitSections, splitByPageDensity } from '@core/parser/question-parser'
 import { initDB, execute, saveDB } from '../db'
 
 const router = useRouter()
@@ -141,6 +142,37 @@ function cancelPreview() {
   previewRaw.value = []
 }
 
+// OCR pipeline: render each page to image, recognize text
+// Returns concatenated text PLUS per-page text for density-based section splitting
+async function ocrPdfText(filePath: string, onProgress?: (pct: number) => void): Promise<{ text: string; pages: string[]; errors: string[]; sample: string }> {
+  const { readFile } = await import('@tauri-apps/plugin-fs')
+  const data = await readFile(filePath)
+  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+  const pdfjsLib = await import('pdfjs-dist')
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise
+  const pages: string[] = []
+  const errors: string[] = []
+  const pageCount = pdf.numPages
+  for (let i = 1; i <= pageCount; i++) {
+    try {
+      const canvas = await renderPageToImage(pdf, i, 4)
+      const img = new Image()
+      img.src = canvas.toDataURL('image/png')
+      await new Promise<void>(r => { img.onload = () => r(); img.onerror = () => r() })
+      const res = await recognizeImage(img)
+      pages.push(res.text)
+      if (res.text.trim().length === 0) errors.push(`第${i}页识别为空`)
+    } catch (e: any) {
+      errors.push(`第${i}页: ${e?.message || e}`)
+      pages.push('')
+      console.error(`OCR 第${i}页失败:`, e)
+    }
+    onProgress?.(Math.round((i / pageCount) * 100))
+  }
+  const text = pages.join('\n')
+  return { text, pages, errors, sample: text.slice(0, 200) }
+}
+
 async function importPapers() {
   try {
     const { open } = await import('@tauri-apps/plugin-dialog')
@@ -160,20 +192,115 @@ async function importPapers() {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
         const basePaper: Paper = await invoke('import_paper', { filePath })
-        const rawText = await extractText(basePaper.filePath)
+        let rawText = await extractText(basePaper.filePath)
 
         // Split into named sections (e.g. 专项刷题一~二十); show preview first
-        if (rawText.trim().length < 100) {
-          alert(`「${fileName}」可能为扫描版 PDF（无法提取文字）。当前版本仅支持文字型 PDF，请使用文字版文件。`)
-          continue
+        // V2: scanned PDFs go through OCR pipeline
+        const wasScanned = isScannedPdf(rawText.trim().length)
+        let ocrPages: string[] | null = null
+        if (wasScanned) {
+          importStatus.value = `正在OCR识别: ${fileName}（可能需要几分钟）`
+          const ocrResult = await ocrPdfText(basePaper.filePath, (p) => {
+            importProgress.value = Math.round(p)
+          })
+          rawText = ocrResult.text
+          ocrPages = ocrResult.pages
+          // Always save OCR debug text for diagnostics
+          try {
+            const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs')
+            await mkdir('D:/PaperFlowData/tmp', { recursive: true })
+            await writeTextFile('D:/PaperFlowData/tmp/ocr_debug.txt', rawText)
+          } catch (e) { /* debug file optional */ }
+          // Diagnose: if OCR produced nothing usable, show what happened
+          if (rawText.trim().length < 50) {
+            const errMsg = ocrResult.errors.length > 0
+              ? `\n\n错误明细:\n${ocrResult.errors.slice(0, 5).join('\n')}`
+              : ''
+            alert(`「${fileName}」OCR 识别失败或结果为空。${errMsg}\n\n识别文本长度: ${rawText.trim().length} 字符`)
+            continue
+          }
         }
-        const sections = splitSections(rawText)
+        let sections = splitSections(rawText)
+        // For scanned PDFs: if text-based splitting only found "全部" fallback,
+        // try page-density-based splitting using per-page OCR data
+        if (wasScanned && sections.length === 1 && sections[0].name === '全部' && ocrPages && ocrPages.length > 1) {
+          const densitySections = splitByPageDensity(ocrPages)
+          if (densitySections.length > 1) {
+            sections = densitySections
+          }
+        }
         const parsed = sections.map((sec, si) => ({
           sec,
           si,
           qs: parseQuestions(basePaper.id + '-s' + si, sec.text),
         }))
+        // Use chapter label in paper titles for hierarchical display
+        if (parsed.some(p => p.sec.chapter)) {
+          parsed.forEach(p => {
+            if (p.sec.chapter && p.qs.length > 0) {
+              p.sec.name = `${p.sec.chapter} - ${p.sec.name}`
+            }
+          })
+        }
         const usable = parsed.filter(p => p.qs.length > 0)
+
+        // Fallback: text extracted but no questions parsed (mixed PDFs with image questions + text watermark)
+        // → retry with OCR pipeline automatically
+        if (usable.length === 0 && !wasScanned) {
+          importStatus.value = `文本层无题目，正在OCR识别: ${fileName}`
+          const ocrResult2 = await ocrPdfText(basePaper.filePath, (p) => {
+            importProgress.value = Math.round(p)
+          })
+          rawText = ocrResult2.text
+          // Always save OCR debug text for diagnostics
+          try {
+            const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs')
+            await mkdir('D:/PaperFlowData/tmp', { recursive: true })
+            await writeTextFile('D:/PaperFlowData/tmp/ocr_debug.txt', rawText)
+          } catch (e) { /* debug file optional */ }
+          let ocrSections = splitSections(rawText)
+          // Try page-density splitting for the fallback OCR path too
+          if (ocrSections.length === 1 && ocrSections[0].name === '全部' && ocrResult2.pages && ocrResult2.pages.length > 1) {
+            const densitySections2 = splitByPageDensity(ocrResult2.pages)
+            if (densitySections2.length > 1) ocrSections = densitySections2
+          }
+          const ocrParsed = ocrSections.map((sec, si) => ({
+            sec,
+            si,
+            qs: parseQuestions(basePaper.id + '-s' + si, sec.text),
+          }))
+          const ocrUsable = ocrParsed.filter(p => p.qs.length > 0)
+          if (ocrUsable.length > 0) {
+            // OCR succeeded — proceed with OCR results
+            previewPaper.value = basePaper
+            previewSections.value = ocrUsable.map(u => ({ name: u.sec.name, count: u.qs.length }))
+            previewRaw.value = ocrUsable
+            continue
+          }
+        }
+
+        // Diagnose: text produced but parser found no questions — show preview
+        if (usable.length === 0) {
+          const kind = wasScanned ? 'OCR 识别' : '文本提取'
+          // Debug: save full OCR text for format analysis
+          try {
+            const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs')
+            await mkdir('D:/PaperFlowData/tmp', { recursive: true })
+            await writeTextFile('D:/PaperFlowData/tmp/ocr_debug.txt', rawText)
+          } catch (e) { /* debug file optional */ }
+          // Find a segment with question-number-like patterns for preview
+          const lines = rawText.split('\n')
+          let preview = ''
+          for (let i = 0; i < lines.length; i++) {
+            if (/^\s*\d{1,3}\s*[\.、．）\)]/.test(lines[i])) {
+              preview = lines.slice(Math.max(0, i - 2), i + 15).join('\n')
+              break
+            }
+          }
+          if (!preview) preview = rawText.trim().slice(0, 400)
+          alert(`「${fileName}」${kind}出 ${rawText.trim().length} 字符，但未解析出题目。\n\n已保存完整文本到 D:\\PaperFlowData\\tmp\\ocr_debug.txt\n\n题号特征预览:\n${preview}`)
+          continue
+        }
 
         if (usable.length > 1) {
           // Multiple sets: show preview dialog, save on confirm
